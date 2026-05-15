@@ -8,20 +8,14 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-// TODO_ZAPPFY: confirmar endpoint e body de envio de texto.
-// Suposição baseada no padrão Baileys/Z-API + na doc Zappfy que menciona o
-// campo "number" no body. Quando confirmar a página "Enviar Mensagem → Enviar
-// Texto", ajuste path/body aqui se necessário.
-const SEND_TEXT_PATH = "/message/sendText";
-
-export async function sendTextMessage(numberE164: string, message: string): Promise<void> {
-  const url = `${API_BASE_URL}${SEND_TEXT_PATH}`;
+export async function sendTextMessage(numberE164: string, text: string): Promise<void> {
+  const url = `${API_BASE_URL}/send/text`;
   const res = await fetch(url, {
     method: "POST",
     headers: authHeaders(),
     body: JSON.stringify({
       number: numberE164,
-      message,
+      text,
     }),
   });
 
@@ -51,21 +45,19 @@ export type ParsedMessage =
   | { kind: "text"; data: ParsedTextMessage }
   | { kind: "unsupported"; data: ParsedUnsupportedMessage };
 
-// TODO_ZAPPFY: confirmar o shape do payload do evento "messages".
-// O parser abaixo é tolerante e cobre as variações mais comuns em providers
-// baseados em Baileys (Zappfy é Baileys-based):
-//   - { event, data: { ... } } com data sendo a mensagem
-//   - { messages: [ ... ] } estilo Z-API
-//   - { type, data: { ... } }
-// Cobrimos os campos prováveis: chatid/from/phone, fromMe/wasSentByApi,
-// messageId/id, message.conversation / text / body, type / messageType,
-// isGroup, t/timestamp.
+const WA_JID_SUFFIX = /@(?:s\.whatsapp\.net|g\.us|c\.us|lid)$/;
+
+function stripJidSuffix(value: string): string {
+  return value.replace(WA_JID_SUFFIX, "");
+}
+
 export function extractMessages(payload: unknown): ParsedMessage[] {
   const candidates = collectMessageCandidates(payload);
   const result: ParsedMessage[] = [];
 
   for (const m of candidates) {
     if (m.fromMe || m.wasSentByApi) continue;
+    if (!m.from || !m.messageId) continue;
 
     const base = {
       from: m.from,
@@ -73,8 +65,6 @@ export function extractMessages(payload: unknown): ParsedMessage[] {
       timestamp: m.timestamp,
       isGroup: m.isGroup,
     };
-
-    if (!base.from || !base.messageId) continue;
 
     if (m.text) {
       result.push({ kind: "text", data: { ...base, text: m.text } });
@@ -101,14 +91,12 @@ function collectMessageCandidates(payload: unknown): NormalizedMessage[] {
   if (!payload || typeof payload !== "object") return [];
   const p = payload as Record<string, unknown>;
 
-  // Padrão 1: array em "messages"
   if (Array.isArray(p.messages)) {
     return p.messages
       .map(normalizeMessage)
       .filter((m): m is NormalizedMessage => m !== null);
   }
 
-  // Padrão 2: { event, data: ... } — data pode ser objeto único ou array
   if (p.data) {
     if (Array.isArray(p.data)) {
       return (p.data as unknown[])
@@ -119,7 +107,6 @@ function collectMessageCandidates(payload: unknown): NormalizedMessage[] {
     return single ? [single] : [];
   }
 
-  // Padrão 3: payload já é a mensagem
   const single = normalizeMessage(p);
   return single ? [single] : [];
 }
@@ -128,8 +115,9 @@ function normalizeMessage(raw: unknown): NormalizedMessage | null {
   if (!raw || typeof raw !== "object") return null;
   const m = raw as Record<string, any>;
 
-  const from =
+  const fromRaw =
     (typeof m.chatid === "string" && m.chatid) ||
+    (typeof m.sender === "string" && m.sender) ||
     (typeof m.from === "string" && m.from) ||
     (typeof m.phone === "string" && m.phone) ||
     (typeof m.remoteJid === "string" && m.remoteJid) ||
@@ -137,6 +125,7 @@ function normalizeMessage(raw: unknown): NormalizedMessage | null {
     "";
 
   const messageId =
+    (typeof m.messageid === "string" && m.messageid) ||
     (typeof m.messageId === "string" && m.messageId) ||
     (typeof m.id === "string" && m.id) ||
     (m.key && typeof m.key.id === "string" && m.key.id) ||
@@ -144,8 +133,8 @@ function normalizeMessage(raw: unknown): NormalizedMessage | null {
 
   const text =
     (typeof m.text === "string" && m.text) ||
+    (m.content && typeof m.content.text === "string" && m.content.text) ||
     (typeof m.body === "string" && m.body) ||
-    (m.text && typeof m.text.message === "string" && m.text.message) ||
     (m.message && typeof m.message.conversation === "string" && m.message.conversation) ||
     (m.message?.extendedTextMessage &&
       typeof m.message.extendedTextMessage.text === "string" &&
@@ -153,27 +142,28 @@ function normalizeMessage(raw: unknown): NormalizedMessage | null {
     undefined;
 
   const type =
-    (typeof m.type === "string" && m.type) ||
     (typeof m.messageType === "string" && m.messageType) ||
+    (typeof m.type === "string" && m.type) ||
     (m.message && Object.keys(m.message)[0]) ||
     undefined;
 
   const tsRaw =
+    (typeof m.messageTimestamp === "number" && m.messageTimestamp) ||
     (typeof m.timestamp === "number" && m.timestamp) ||
     (typeof m.timestamp === "string" && Number(m.timestamp)) ||
     (typeof m.t === "number" && m.t) ||
-    (typeof m.messageTimestamp === "number" && m.messageTimestamp) ||
-    Date.now() / 1000;
+    Date.now();
   const timestamp = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
 
   const fromMe = Boolean(m.fromMe ?? m.key?.fromMe ?? false);
   const wasSentByApi = Boolean(m.wasSentByApi ?? false);
-  const isGroup = Boolean(
-    m.isGroup ?? (typeof from === "string" && from.endsWith("@g.us")),
-  );
+
+  const fromJid = String(fromRaw);
+  const isGroup = Boolean(m.isGroup ?? fromJid.endsWith("@g.us"));
+  const from = stripJidSuffix(fromJid).replace(/:\d+$/, "");
 
   return {
-    from: String(from),
+    from,
     messageId: String(messageId),
     text: text ? String(text) : undefined,
     type,
