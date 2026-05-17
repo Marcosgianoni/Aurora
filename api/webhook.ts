@@ -1,3 +1,4 @@
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { waitUntil } from "@vercel/functions";
 import {
   extractMessages,
@@ -11,61 +12,63 @@ import {
   markMessageProcessed,
 } from "../lib/storage.js";
 
-export const config = {
-  runtime: "nodejs",
-};
-
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
 
-export default async function handler(req: Request): Promise<Response> {
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse,
+): Promise<void> {
   try {
-    return await route(req);
+    if (!isAuthorized(req)) {
+      res.status(403).send("Forbidden");
+      return;
+    }
+
+    if (req.method === "GET") {
+      res.status(200).send("ok");
+      return;
+    }
+
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "GET, POST");
+      res.status(405).send("Method Not Allowed");
+      return;
+    }
+
+    const payload = typeof req.body === "string"
+      ? safeParse(req.body)
+      : req.body;
+
+    const messages = extractMessages(payload);
+    waitUntil(processMessages(messages));
+
+    res.status(200).send("ok");
   } catch (err) {
     console.error("Webhook handler crashed", err);
     const message = err instanceof Error ? err.message : String(err);
-    return new Response(`Internal error: ${message}`, { status: 500 });
+    res.status(500).send(`Internal error: ${message}`);
   }
 }
 
-async function route(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-
-  if (!isAuthorized(url)) {
-    return new Response("Forbidden", { status: 403 });
-  }
-
-  if (req.method === "GET") {
-    return new Response("ok", { status: 200 });
-  }
-
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", {
-      status: 405,
-      headers: { Allow: "GET, POST" },
-    });
-  }
-
-  let payload: unknown;
+function safeParse(body: string): unknown {
   try {
-    payload = await req.json();
+    return JSON.parse(body);
   } catch {
-    return new Response("Invalid JSON", { status: 400 });
+    return {};
   }
-
-  const messages = extractMessages(payload);
-  waitUntil(processMessages(messages));
-
-  return new Response("ok", { status: 200 });
 }
 
-function isAuthorized(url: URL): boolean {
+function isAuthorized(req: VercelRequest): boolean {
   if (!WEBHOOK_SECRET) return false;
-  // Aceita o secret em query (?s=...) ou no último segmento do path
-  // (ex: /api/webhook/<secret>)
-  const queryToken = url.searchParams.get("s");
+
+  const queryToken = typeof req.query.s === "string" ? req.query.s : undefined;
   if (queryToken && queryToken === WEBHOOK_SECRET) return true;
 
-  const segments = url.pathname.split("/").filter(Boolean);
+  const pathSecret = typeof req.query.secret === "string" ? req.query.secret : undefined;
+  if (pathSecret && pathSecret === WEBHOOK_SECRET) return true;
+
+  const urlPath = req.url ?? "";
+  const segments = urlPath.split("?")[0]?.split("/").filter(Boolean) ?? [];
   const last = segments[segments.length - 1] ?? "";
   return last === WEBHOOK_SECRET;
 }
@@ -74,7 +77,7 @@ async function processMessages(messages: ParsedMessage[]): Promise<void> {
   await Promise.all(
     messages.map(async (m) => {
       try {
-        if (m.data.isGroup) return; // Ignora grupos por padrão
+        if (m.data.isGroup) return;
 
         const isNew = await markMessageProcessed(m.data.messageId);
         if (!isNew) return;
