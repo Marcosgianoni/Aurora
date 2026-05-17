@@ -91,6 +91,13 @@ function collectMessageCandidates(payload: unknown): NormalizedMessage[] {
   if (!payload || typeof payload !== "object") return [];
   const p = payload as Record<string, unknown>;
 
+  if (typeof p.EventType === "string" && p.EventType !== "messages") return [];
+
+  if (p.message && typeof p.message === "object") {
+    const single = normalizeMessage(p.message);
+    return single ? [single] : [];
+  }
+
   if (Array.isArray(p.messages)) {
     return p.messages
       .map(normalizeMessage)
