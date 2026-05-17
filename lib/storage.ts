@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis";
 import type { ConversationMessage } from "./types.js";
 
 const HISTORY_MAX_TURNS = Number(process.env.HISTORY_MAX_TURNS ?? 20);
+const HISTORY_TTL_SECONDS = Number(process.env.HISTORY_TTL_SECONDS ?? 60 * 60 * 6);
 const MESSAGE_DEDUP_TTL_SECONDS = 60 * 60 * 24;
 
 let _redis: Redis | null = null;
@@ -33,6 +34,7 @@ export async function appendHistory(
   const key = historyKey(waId);
   await redis().rpush(key, message);
   await redis().ltrim(key, -HISTORY_MAX_TURNS * 2, -1);
+  await redis().expire(key, HISTORY_TTL_SECONDS);
 }
 
 export async function clearHistory(waId: string): Promise<void> {

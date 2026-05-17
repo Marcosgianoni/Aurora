@@ -8,11 +8,15 @@ import {
 import { generateReply } from "../lib/claude.js";
 import {
   appendHistory,
+  clearHistory,
   getHistory,
   markMessageProcessed,
 } from "../lib/storage.js";
 
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
+const RESET_COMMANDS = new Set(["/reset", "/limpar", "/clear", "/esquecer"]);
+const RESET_CONFIRMATION =
+  "Memória limpa. Começamos do zero a partir de agora. Qual sua dúvida?";
 
 export default async function handler(
   req: VercelRequest,
@@ -87,6 +91,12 @@ async function processMessages(messages: ParsedMessage[]): Promise<void> {
             m.data.from,
             "No momento só consigo processar mensagens de texto. Pode escrever sua dúvida?",
           );
+          return;
+        }
+
+        if (RESET_COMMANDS.has(m.data.text.trim().toLowerCase())) {
+          await clearHistory(m.data.from);
+          await sendTextMessage(m.data.from, RESET_CONFIRMATION);
           return;
         }
 
