@@ -18,6 +18,16 @@ export const config = {
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET ?? "";
 
 export default async function handler(req: Request): Promise<Response> {
+  try {
+    return await route(req);
+  } catch (err) {
+    console.error("Webhook handler crashed", err);
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(`Internal error: ${message}`, { status: 500 });
+  }
+}
+
+async function route(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
   if (!isAuthorized(url)) {
@@ -25,7 +35,6 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   if (req.method === "GET") {
-    // Endpoint de saúde / verificação manual
     return new Response("ok", { status: 200 });
   }
 
